@@ -1,0 +1,594 @@
+openapi: 3.1.0
+info:
+  title: MediAI Care REST API
+  version: 1.0.0
+  description: >-
+    REST equivalent of the GraphQL contract in api/schema.graphql, for clients and
+    integrations that cannot speak GraphQL. Bearer JWT auth (15 min access token +
+    rotating refresh token), RBAC per endpoint, audit logging on every patient-data
+    read and write.
+servers:
+  - url: https://api.mediai.care/v1
+security:
+  - bearerAuth: []
+tags:
+  - name: Auth
+  - name: Patients
+  - name: Prescriptions
+  - name: Reports
+  - name: Appointments
+  - name: AI
+  - name: Admin
+paths:
+  /auth/otp:
+    post:
+      tags: [Auth]
+      summary: Request an OTP
+      security: []
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [phone, role]
+              properties:
+                phone: { type: string, example: "+919822011234" }
+                role: { $ref: '#/components/schemas/Role' }
+      responses:
+        '200':
+          description: OTP dispatched
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  requestId: { type: string }
+                  expiresInSec: { type: integer, example: 120 }
+        '429': { $ref: '#/components/responses/RateLimited' }
+  /auth/otp/verify:
+    post:
+      tags: [Auth]
+      summary: Verify an OTP and issue tokens
+      security: []
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [requestId, code]
+              properties:
+                requestId: { type: string }
+                code: { type: string, minLength: 6, maxLength: 6 }
+      responses:
+        '200':
+          description: Authenticated
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/AuthPayload' }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+  /auth/refresh:
+    post:
+      tags: [Auth]
+      summary: Rotate the refresh token
+      security: []
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [refreshToken]
+              properties:
+                refreshToken: { type: string }
+      responses:
+        '200':
+          description: New token pair
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/AuthPayload' }
+  /patients:
+    get:
+      tags: [Patients]
+      summary: List patients (doctor/admin)
+      parameters:
+        - { in: query, name: search, schema: { type: string } }
+        - { in: query, name: limit, schema: { type: integer, default: 20 } }
+        - { in: query, name: offset, schema: { type: integer, default: 0 } }
+      responses:
+        '200':
+          description: Patient list
+          content:
+            application/json:
+              schema:
+                type: array
+                items: { $ref: '#/components/schemas/Patient' }
+        '403': { $ref: '#/components/responses/Forbidden' }
+  /patients/{patientId}:
+    get:
+      tags: [Patients]
+      summary: Patient summary
+      parameters: [{ $ref: '#/components/parameters/PatientId' }]
+      responses:
+        '200':
+          description: Patient
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/Patient' }
+        '404': { $ref: '#/components/responses/NotFound' }
+  /patients/{patientId}/vitals:
+    get:
+      tags: [Patients]
+      summary: Latest vitals
+      parameters: [{ $ref: '#/components/parameters/PatientId' }]
+      responses:
+        '200':
+          description: Vitals
+          content:
+            application/json:
+              schema:
+                type: array
+                items: { $ref: '#/components/schemas/Vital' }
+  /patients/{patientId}/history:
+    get:
+      tags: [Patients]
+      summary: Medical history timeline
+      parameters: [{ $ref: '#/components/parameters/PatientId' }]
+      responses:
+        '200':
+          description: History entries
+          content:
+            application/json:
+              schema:
+                type: array
+                items: { $ref: '#/components/schemas/HistoryEntry' }
+  /patients/{patientId}/prescriptions:
+    get:
+      tags: [Prescriptions]
+      summary: Prescriptions for a patient
+      parameters:
+        - { $ref: '#/components/parameters/PatientId' }
+        - { in: query, name: kind, schema: { $ref: '#/components/schemas/PrescriptionKind' } }
+      responses:
+        '200':
+          description: Prescriptions
+          content:
+            application/json:
+              schema:
+                type: array
+                items: { $ref: '#/components/schemas/Prescription' }
+  /prescriptions:
+    post:
+      tags: [Prescriptions]
+      summary: Create a prescription (doctor only)
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: '#/components/schemas/PrescriptionInput' }
+      responses:
+        '201':
+          description: Created
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/Prescription' }
+        '409':
+          description: Blocked by a HIGH severity interaction
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  warnings:
+                    type: array
+                    items: { $ref: '#/components/schemas/InteractionWarning' }
+  /interactions/check:
+    post:
+      tags: [Prescriptions]
+      summary: Drug-interaction check (allopathic + Ayurvedic)
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [medicines]
+              properties:
+                medicines:
+                  type: array
+                  items: { $ref: '#/components/schemas/MedicineInput' }
+      responses:
+        '200':
+          description: Warnings, empty array when the combination is safe
+          content:
+            application/json:
+              schema:
+                type: array
+                items: { $ref: '#/components/schemas/InteractionWarning' }
+  /reports:
+    get:
+      tags: [Reports]
+      summary: List reports
+      parameters:
+        - { in: query, name: patientId, required: true, schema: { type: string } }
+        - { in: query, name: category, schema: { $ref: '#/components/schemas/ReportCategory' } }
+      responses:
+        '200':
+          description: Reports
+          content:
+            application/json:
+              schema:
+                type: array
+                items: { $ref: '#/components/schemas/Report' }
+    post:
+      tags: [Reports]
+      summary: Upload a report (multipart, streamed to object storage)
+      requestBody:
+        required: true
+        content:
+          multipart/form-data:
+            schema:
+              type: object
+              required: [patientId, title, file]
+              properties:
+                patientId: { type: string }
+                title: { type: string }
+                file: { type: string, format: binary }
+      responses:
+        '202':
+          description: Accepted, AI summary generated asynchronously
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/Report' }
+  /appointments:
+    get:
+      tags: [Appointments]
+      summary: List appointments
+      parameters:
+        - { in: query, name: from, schema: { type: string, format: date-time } }
+        - { in: query, name: to, schema: { type: string, format: date-time } }
+        - { in: query, name: status, schema: { $ref: '#/components/schemas/AppointmentStatus' } }
+      responses:
+        '200':
+          description: Appointments
+          content:
+            application/json:
+              schema:
+                type: array
+                items: { $ref: '#/components/schemas/Appointment' }
+    post:
+      tags: [Appointments]
+      summary: Book an appointment
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [patientId, doctorId, startsAt, reason]
+              properties:
+                patientId: { type: string }
+                doctorId: { type: string }
+                startsAt: { type: string, format: date-time }
+                reason: { type: string }
+      responses:
+        '201':
+          description: Booked
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/Appointment' }
+  /appointments/{appointmentId}/status:
+    patch:
+      tags: [Appointments]
+      summary: Confirm, complete or cancel
+      parameters:
+        - { in: path, name: appointmentId, required: true, schema: { type: string } }
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [status]
+              properties:
+                status: { $ref: '#/components/schemas/AppointmentStatus' }
+      responses:
+        '200':
+          description: Updated
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/Appointment' }
+  /ai/chat:
+    post:
+      tags: [AI]
+      summary: Ask the health assistant
+      description: Set `stream=true` to receive `text/event-stream` tokens instead of a single JSON body.
+      parameters:
+        - { in: query, name: stream, schema: { type: boolean, default: false } }
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [question]
+              properties:
+                question: { type: string }
+                patientId: { type: string }
+      responses:
+        '200':
+          description: Assistant reply
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/ChatMessage' }
+  /ai/voice/transcribe:
+    post:
+      tags: [AI]
+      summary: Speech-to-text for the voice assistant
+      requestBody:
+        required: true
+        content:
+          multipart/form-data:
+            schema:
+              type: object
+              required: [audio]
+              properties:
+                audio: { type: string, format: binary }
+      responses:
+        '200':
+          description: Transcript
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  text: { type: string }
+                  confidence: { type: number, format: float }
+  /ai/ocr:
+    post:
+      tags: [AI]
+      summary: Parse a handwritten prescription into structured medicines
+      requestBody:
+        required: true
+        content:
+          multipart/form-data:
+            schema:
+              type: object
+              required: [image]
+              properties:
+                image: { type: string, format: binary }
+      responses:
+        '200':
+          description: Extraction result
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/OcrResult' }
+  /admin/stats:
+    get:
+      tags: [Admin]
+      summary: Platform KPIs
+      responses:
+        '200':
+          description: Stats
+          content:
+            application/json:
+              schema:
+                type: array
+                items:
+                  type: object
+                  properties:
+                    key: { type: string }
+                    label: { type: string }
+                    value: { type: number }
+  /admin/audit-log:
+    get:
+      tags: [Admin]
+      summary: Paginated audit trail
+      parameters:
+        - { in: query, name: actorId, schema: { type: string } }
+        - { in: query, name: from, schema: { type: string, format: date-time } }
+        - { in: query, name: limit, schema: { type: integer, default: 50 } }
+      responses:
+        '200':
+          description: Audit entries
+          content:
+            application/json:
+              schema:
+                type: array
+                items:
+                  type: object
+                  properties:
+                    id: { type: string }
+                    actorId: { type: string }
+                    action: { type: string }
+                    resource: { type: string }
+                    purpose: { type: string }
+                    at: { type: string, format: date-time }
+components:
+  securitySchemes:
+    bearerAuth:
+      type: http
+      scheme: bearer
+      bearerFormat: JWT
+  parameters:
+    PatientId:
+      in: path
+      name: patientId
+      required: true
+      schema: { type: string }
+  responses:
+    Unauthorized:
+      description: Missing or invalid credentials
+      content:
+        application/json:
+          schema: { $ref: '#/components/schemas/Error' }
+    Forbidden:
+      description: Role or consent does not permit this action
+      content:
+        application/json:
+          schema: { $ref: '#/components/schemas/Error' }
+    NotFound:
+      description: Resource not found
+      content:
+        application/json:
+          schema: { $ref: '#/components/schemas/Error' }
+    RateLimited:
+      description: Too many requests
+      content:
+        application/json:
+          schema: { $ref: '#/components/schemas/Error' }
+  schemas:
+    Error:
+      type: object
+      properties:
+        code: { type: string }
+        message: { type: string }
+        traceId: { type: string }
+    Role:
+      type: string
+      enum: [patient, doctor, admin]
+    PrescriptionKind:
+      type: string
+      enum: [clinical, ayurvedic]
+    ReportCategory:
+      type: string
+      enum: [lab, imaging, discharge]
+    AppointmentStatus:
+      type: string
+      enum: [confirmed, pending, cancelled, completed]
+    AuthPayload:
+      type: object
+      properties:
+        accessToken: { type: string }
+        refreshToken: { type: string }
+        expiresIn: { type: integer, example: 900 }
+        user: { $ref: '#/components/schemas/User' }
+    User:
+      type: object
+      properties:
+        id: { type: string }
+        name: { type: string }
+        role: { $ref: '#/components/schemas/Role' }
+        phone: { type: string }
+        email: { type: string }
+    Patient:
+      type: object
+      properties:
+        id: { type: string }
+        name: { type: string }
+        age: { type: integer }
+        gender: { type: string }
+        bloodGroup: { type: string }
+        conditions:
+          type: array
+          items: { type: string }
+        lastVisit: { type: string, format: date }
+    Vital:
+      type: object
+      properties:
+        id: { type: string }
+        label: { type: string }
+        value: { type: number }
+        unit: { type: string }
+        recordedAt: { type: string, format: date-time }
+    MedicineInput:
+      type: object
+      required: [name, dosage, frequency, durationDays, kind]
+      properties:
+        name: { type: string }
+        rxNormCode: { type: string }
+        dosage: { type: string }
+        frequency: { type: string, example: "1-0-1" }
+        durationDays: { type: integer }
+        kind: { $ref: '#/components/schemas/PrescriptionKind' }
+    Medicine:
+      allOf:
+        - { $ref: '#/components/schemas/MedicineInput' }
+        - type: object
+          properties:
+            id: { type: string }
+    PrescriptionInput:
+      type: object
+      required: [patientId, kind, diagnosis, medicines]
+      properties:
+        patientId: { type: string }
+        kind: { $ref: '#/components/schemas/PrescriptionKind' }
+        diagnosis: { type: string }
+        medicines:
+          type: array
+          items: { $ref: '#/components/schemas/MedicineInput' }
+    Prescription:
+      type: object
+      properties:
+        id: { type: string }
+        patientId: { type: string }
+        doctorName: { type: string }
+        issuedAt: { type: string, format: date }
+        kind: { $ref: '#/components/schemas/PrescriptionKind' }
+        diagnosis: { type: string }
+        medicines:
+          type: array
+          items: { $ref: '#/components/schemas/Medicine' }
+        pdfUrl: { type: string }
+    Report:
+      type: object
+      properties:
+        id: { type: string }
+        patientId: { type: string }
+        title: { type: string }
+        category: { $ref: '#/components/schemas/ReportCategory' }
+        uploadedAt: { type: string, format: date }
+        sizeKb: { type: integer }
+        status: { type: string, enum: [ready, processing] }
+        downloadUrl: { type: string }
+        aiSummary: { type: string }
+    HistoryEntry:
+      type: object
+      properties:
+        id: { type: string }
+        title: { type: string }
+        date: { type: string, format: date }
+        summary: { type: string }
+        details:
+          type: array
+          items: { type: string }
+    Appointment:
+      type: object
+      properties:
+        id: { type: string }
+        patientId: { type: string }
+        patientName: { type: string }
+        doctorName: { type: string }
+        startsAt: { type: string, format: date-time }
+        reason: { type: string }
+        status: { $ref: '#/components/schemas/AppointmentStatus' }
+    ChatMessage:
+      type: object
+      properties:
+        id: { type: string }
+        author: { type: string, enum: [user, assistant] }
+        text: { type: string }
+        createdAt: { type: string, format: date-time }
+        citations:
+          type: array
+          items: { type: string }
+    InteractionWarning:
+      type: object
+      properties:
+        id: { type: string }
+        severity: { type: string, enum: [low, moderate, high] }
+        drugA: { type: string }
+        drugB: { type: string }
+        description: { type: string }
+        advice: { type: string }
+        source: { type: string, example: "RxNorm + curated Ayurvedic interaction set" }
+    OcrResult:
+      type: object
+      properties:
+        jobId: { type: string }
+        rawText: { type: string }
+        confidence: { type: number, format: float }
+        medicines:
+          type: array
+          items: { $ref: '#/components/schemas/Medicine' }
