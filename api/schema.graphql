@@ -1,0 +1,241 @@
+"""
+MediAI Care GraphQL contract.
+Transport: Apollo Server over HTTPS. Auth: `Authorization: Bearer <accessToken>` (JWT, 15 min)
+with a rotating refresh token. Every resolver enforces RBAC on the caller's role and, for
+patient data, an active consent grant. All reads/writes emit a HIPAA-aligned audit entry.
+"""
+
+schema {
+  query: Query
+  mutation: Mutation
+  subscription: Subscription
+}
+
+directive @auth(requires: [Role!]!) on FIELD_DEFINITION | OBJECT
+
+scalar DateTime
+scalar Upload
+
+enum Role {
+  PATIENT
+  DOCTOR
+  ADMIN
+}
+
+enum AppointmentStatus {
+  CONFIRMED
+  PENDING
+  CANCELLED
+  COMPLETED
+}
+
+enum PrescriptionKind {
+  CLINICAL
+  AYURVEDIC
+}
+
+enum ReportCategory {
+  LAB
+  IMAGING
+  DISCHARGE
+}
+
+enum InteractionSeverity {
+  LOW
+  MODERATE
+  HIGH
+}
+
+type User {
+  id: ID!
+  name: String!
+  role: Role!
+  phone: String!
+  email: String
+  avatarColor: String
+}
+
+type Patient {
+  id: ID!
+  name: String!
+  age: Int!
+  gender: String!
+  bloodGroup: String!
+  conditions: [String!]!
+  lastVisit: DateTime
+  vitals: [Vital!]!
+  prescriptions(kind: PrescriptionKind): [Prescription!]!
+  reports(category: ReportCategory): [Report!]!
+  history: [HistoryEntry!]!
+  appointments(from: DateTime, to: DateTime): [Appointment!]!
+}
+
+type Vital {
+  id: ID!
+  label: String!
+  value: Float!
+  unit: String!
+  recordedAt: DateTime!
+}
+
+type Medicine {
+  id: ID!
+  name: String!
+  rxNormCode: String
+  dosage: String!
+  frequency: String!
+  durationDays: Int!
+  kind: PrescriptionKind!
+}
+
+type Prescription {
+  id: ID!
+  patient: Patient!
+  doctor: User!
+  issuedAt: DateTime!
+  kind: PrescriptionKind!
+  diagnosis: String!
+  medicines: [Medicine!]!
+  pdfUrl: String
+}
+
+type Report {
+  id: ID!
+  patient: Patient!
+  title: String!
+  category: ReportCategory!
+  uploadedAt: DateTime!
+  sizeKb: Int!
+  status: String!
+  downloadUrl: String
+  aiSummary: String
+}
+
+type HistoryEntry {
+  id: ID!
+  title: String!
+  date: DateTime!
+  summary: String!
+  details: [String!]!
+}
+
+type Appointment {
+  id: ID!
+  patient: Patient!
+  doctor: User!
+  startsAt: DateTime!
+  reason: String!
+  status: AppointmentStatus!
+}
+
+type ChatMessage {
+  id: ID!
+  author: String!
+  text: String!
+  createdAt: DateTime!
+  citations: [String!]!
+}
+
+type InteractionWarning {
+  id: ID!
+  severity: InteractionSeverity!
+  drugA: String!
+  drugB: String!
+  description: String!
+  advice: String!
+  source: String!
+}
+
+type OcrResult {
+  jobId: ID!
+  rawText: String!
+  medicines: [Medicine!]!
+  confidence: Float!
+}
+
+type AuthPayload {
+  accessToken: String!
+  refreshToken: String!
+  expiresIn: Int!
+  user: User!
+}
+
+type OtpSession {
+  requestId: ID!
+  expiresInSec: Int!
+}
+
+input OtpRequestInput {
+  phone: String!
+  role: Role!
+}
+
+input OtpVerifyInput {
+  requestId: ID!
+  code: String!
+}
+
+input MedicineInput {
+  name: String!
+  rxNormCode: String
+  dosage: String!
+  frequency: String!
+  durationDays: Int!
+  kind: PrescriptionKind!
+}
+
+input PrescriptionInput {
+  patientId: ID!
+  kind: PrescriptionKind!
+  diagnosis: String!
+  medicines: [MedicineInput!]!
+}
+
+input AppointmentInput {
+  patientId: ID!
+  doctorId: ID!
+  startsAt: DateTime!
+  reason: String!
+}
+
+type Query {
+  me: User! @auth(requires: [PATIENT, DOCTOR, ADMIN])
+  patient(id: ID!): Patient @auth(requires: [PATIENT, DOCTOR])
+  patients(search: String, limit: Int = 20, offset: Int = 0): [Patient!]! @auth(requires: [DOCTOR, ADMIN])
+  appointments(from: DateTime, to: DateTime, status: AppointmentStatus): [Appointment!]! @auth(requires: [PATIENT, DOCTOR])
+  medicineCatalog(kind: PrescriptionKind, search: String): [Medicine!]! @auth(requires: [DOCTOR])
+  chatHistory(limit: Int = 50): [ChatMessage!]! @auth(requires: [PATIENT, DOCTOR])
+  platformStats: [KeyValue!]! @auth(requires: [ADMIN])
+}
+
+type KeyValue {
+  key: String!
+  label: String!
+  value: Float!
+}
+
+type Mutation {
+  requestOtp(input: OtpRequestInput!): OtpSession!
+  verifyOtp(input: OtpVerifyInput!): AuthPayload!
+  refreshSession(refreshToken: String!): AuthPayload!
+  signOut: Boolean!
+
+  uploadReport(patientId: ID!, title: String!, file: Upload!): Report! @auth(requires: [PATIENT, DOCTOR])
+  createPrescription(input: PrescriptionInput!): Prescription! @auth(requires: [DOCTOR])
+  checkInteractions(medicines: [MedicineInput!]!): [InteractionWarning!]! @auth(requires: [DOCTOR])
+  scanPrescription(file: Upload!): OcrResult! @auth(requires: [DOCTOR, PATIENT])
+
+  bookAppointment(input: AppointmentInput!): Appointment! @auth(requires: [PATIENT, DOCTOR])
+  updateAppointmentStatus(id: ID!, status: AppointmentStatus!): Appointment! @auth(requires: [DOCTOR, PATIENT])
+
+  askAssistant(question: String!, patientId: ID): ChatMessage! @auth(requires: [PATIENT, DOCTOR])
+  transcribeVoice(file: Upload!): String! @auth(requires: [PATIENT, DOCTOR])
+
+  setAuditLogging(enabled: Boolean!): Boolean! @auth(requires: [ADMIN])
+}
+
+"""Streams assistant tokens so the chat can render them as they arrive."""
+type Subscription {
+  assistantStream(conversationId: ID!): ChatMessage!
+  ocrProgress(jobId: ID!): Float!
+}
